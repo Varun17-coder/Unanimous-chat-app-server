@@ -43,6 +43,7 @@ const waitingQueue = new Set();
 //room chat data structures
 const rooms = new Map();
 const roomOwners = new Map();
+const usernames = new Map();
 wss.on("connection", (socket) => {
     console.log("New client connected");
     userCount++;
@@ -119,6 +120,7 @@ wss.on("connection", (socket) => {
             const username = (_a = parsed.username) === null || _a === void 0 ? void 0 : _a.trim();
             if (!username)
                 return;
+            usernames.set(socket, username);
             const roomId = generateRoomId();
             socket.username = username;
             socket.roomId = roomId;
@@ -130,12 +132,14 @@ wss.on("connection", (socket) => {
                 roomId,
                 message: `Room created with ID: ${roomId}`,
             }));
+            broadcastRoomParticipants(roomId);
             return;
         }
         // 🟦 2. Join Room
         if (parsed.type === "join-room") {
             const username = (_b = parsed.username) === null || _b === void 0 ? void 0 : _b.trim();
             const roomId = (_c = parsed.roomId) === null || _c === void 0 ? void 0 : _c.trim();
+            usernames.set(socket, username || "Anonymous");
             if (!username || !roomId || !rooms.has(roomId)) {
                 socket.send(JSON.stringify({
                     type: "error",
@@ -156,6 +160,7 @@ wss.on("connection", (socket) => {
                     }));
                 }
             }
+            broadcastRoomParticipants(roomId);
             return;
         }
         // 🟨 3. Group Chat
@@ -168,12 +173,31 @@ wss.on("connection", (socket) => {
                 from: socket.username || "Anonymous",
             };
             for (const member of rooms.get(roomId)) {
-                member.send(JSON.stringify(chatMsg));
+                if (member !== socket) {
+                    member.send(JSON.stringify(chatMsg));
+                }
             }
             return;
         }
         // 🟥 4. Unknown message
         // socket.send(JSON.stringify({ type: "error", message: "Unknown message type." }));
+        if (parsed.type === "leave-room") {
+            const roomId = socket.roomId;
+            if (roomId && rooms.has(roomId)) {
+                const members = rooms.get(roomId);
+                members === null || members === void 0 ? void 0 : members.delete(socket);
+                usernames.delete(socket);
+                delete socket.roomId;
+                delete socket.partner;
+                socket.send(JSON.stringify({ type: "room-left", message: "You left the room." }));
+                if ((members === null || members === void 0 ? void 0 : members.size) === 0) {
+                    rooms.delete(roomId);
+                }
+                else {
+                    broadcastRoomParticipants(roomId);
+                }
+            }
+        }
     });
     socket.on("close", () => {
         console.log("❌ Client disconnected");
@@ -227,6 +251,20 @@ wss.on("connection", (socket) => {
                 roomOwners.delete(roomId);
             }
         }
+        // disconnection cleanup
+        if (socket.roomId) {
+            const members = rooms.get(socket.roomId);
+            if (members) {
+                members.delete(socket);
+                if (members.size == 0) {
+                    rooms.delete(socket.roomId);
+                }
+                else {
+                    broadcastRoomParticipants(socket.roomId);
+                }
+            }
+        }
+        usernames.delete(socket);
     });
 });
 function matchUsers() {
@@ -256,5 +294,18 @@ function broadcastUserCount() {
         if (client.readyState === ws_1.default.OPEN) {
             client.send(JSON.stringify({ type: "users-online", count: userCount }));
         }
+    }
+}
+function broadcastRoomParticipants(roomId) {
+    const members = rooms.get(roomId);
+    if (!members)
+        return;
+    const participantNames = Array.from(members).map((member) => usernames.get(member) || 'Anonymous');
+    const message = JSON.stringify({
+        type: 'participants',
+        participants: participantNames,
+    });
+    for (const member of members) {
+        member.send(message);
     }
 }

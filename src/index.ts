@@ -19,6 +19,7 @@ type ChatMessage = {
     | "info"
     | "room-created"
     | "room-deleted"
+    | "leave-room"
     | "error"
     | "typing";
   message?: string;
@@ -42,6 +43,8 @@ const waitingQueue = new Set<ChatSocket>();
 //room chat data structures
 const rooms: Map<string, Set<ChatSocket>> = new Map();
 const roomOwners: Map<string, ChatSocket> = new Map();
+
+const usernames = new Map<ChatSocket, string>();
 
 
 wss.on("connection", (socket: ChatSocket) => {
@@ -67,7 +70,7 @@ socket.on("message", (data: WebSocket.RawData) => {
   try {
     parsed = JSON.parse(data.toString()) as ChatMessage;
   } catch (err) {
-    console.log("❗ Invalid message:", data.toString());
+    console.log("❗Invalid message:", data.toString());
     return;
   }
 
@@ -130,6 +133,8 @@ socket.on("message", (data: WebSocket.RawData) => {
       const username = parsed.username?.trim();
       if (!username) return;
 
+      usernames.set(socket,username);
+
       const roomId = generateRoomId();
       socket.username = username;
       socket.roomId = roomId;
@@ -144,6 +149,8 @@ socket.on("message", (data: WebSocket.RawData) => {
         message: `Room created with ID: ${roomId}`,
       }));
 
+      broadcastRoomParticipants(roomId);
+
       return;
     }
 
@@ -151,6 +158,8 @@ socket.on("message", (data: WebSocket.RawData) => {
     if (parsed.type === "join-room") {
       const username = parsed.username?.trim();
       const roomId = parsed.roomId?.trim();
+
+      usernames.set(socket,username || "Anonymous"); 
 
       if (!username || !roomId || !rooms.has(roomId)) {
         socket.send(JSON.stringify({
@@ -176,6 +185,8 @@ socket.on("message", (data: WebSocket.RawData) => {
         }
       }
 
+       broadcastRoomParticipants(roomId);
+
       return;
     }
 
@@ -190,8 +201,11 @@ socket.on("message", (data: WebSocket.RawData) => {
         from: socket.username || "Anonymous",
       };
 
+      
       for (const member of rooms.get(roomId)!) {
+        if(member!== socket){
         member.send(JSON.stringify(chatMsg));
+        }
       }
 
       return;
@@ -199,6 +213,27 @@ socket.on("message", (data: WebSocket.RawData) => {
 
     // 🟥 4. Unknown message
     // socket.send(JSON.stringify({ type: "error", message: "Unknown message type." }));
+
+    if(parsed.type === "leave-room"){
+        const roomId = socket.roomId;
+
+        if(roomId && rooms.has(roomId)){
+            const members = rooms.get(roomId);
+            members?.delete(socket);
+
+            usernames.delete(socket);
+            delete socket.roomId;
+            delete socket.partner;
+
+            socket.send(JSON.stringify({ type : "room-left", message: "You left the room." }));
+
+            if(members?.size === 0){
+                rooms.delete(roomId);
+            }else{
+                broadcastRoomParticipants(roomId)
+            }
+        }
+    }
   
 });
 
@@ -260,6 +295,21 @@ socket.on("message", (data: WebSocket.RawData) => {
     }
   }
 
+  // disconnection cleanup
+  if(socket.roomId){
+    const members = rooms.get(socket.roomId);
+    if(members){
+        members.delete(socket);
+        if(members.size == 0){
+            rooms.delete(socket.roomId);
+        }else{
+            broadcastRoomParticipants(socket.roomId);
+        }
+    }
+  }
+
+  usernames.delete(socket);
+
   });
 });
 
@@ -298,5 +348,24 @@ function broadcastUserCount() {
     }
   }
 }
+
+function broadcastRoomParticipants(roomId: string) {
+  const members = rooms.get(roomId);
+  if (!members) return;
+
+  const participantNames = Array.from(members).map(
+    (member) => usernames.get(member) || 'Anonymous'
+  );
+
+  const message = JSON.stringify({
+    type: 'participants',
+    participants: participantNames,
+  });
+
+  for (const member of members) {
+    member.send(message);
+  }
+}
+
 
 
