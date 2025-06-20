@@ -64,7 +64,7 @@ wss.on("connection", (socket) => {
             parsed = JSON.parse(data.toString());
         }
         catch (err) {
-            console.log("❗ Invalid message:", data.toString());
+            console.log("❗Invalid message:", data.toString());
             return;
         }
         if (parsed.type === "find") {
